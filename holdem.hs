@@ -16,6 +16,21 @@ bigBlind = 100
 randRange :: Int -> Int -> IO Int
 randRange a b = randomRIO (a, b)
 
+genericPlayerName :: Int -> String
+genericPlayerName playerNum
+
+    | playerNum == 1  = "Andrew"
+    | playerNum == 2  = "Brian"
+    | playerNum == 3  = "Charlie"
+    | playerNum == 4  = "David"
+    | playerNum == 5  = "Edward"
+    | playerNum == 6  = "Frank"
+    | playerNum == 7  = "George"
+    | playerNum == 8  = "Henry"
+    | playerNum == 9  = "Ian"
+    | playerNum == 10 = "John"
+    | otherwise       = "TOO MANY"
+
 -- DEFINING CARDS AND SHUFFLING THE DECK
 
 data Suit = Clubs | Diamonds | Hearts | Spades
@@ -147,7 +162,8 @@ data GameState = GameState {
     pot            :: Int,
     bets           :: [Int],
     dealerPos      :: Int,
-    bettingRound   :: BettingRound
+    bettingRound   :: BettingRound,
+    revealedCommunityCards :: [Card]
 } deriving (Eq)
 
 instance Show GameState where
@@ -161,6 +177,7 @@ instance Show GameState where
         "Bets: " ++ show (bets gs) ++ "\n" ++
         "Dealer Position: " ++ show (dealerPos gs) ++ "\n" ++
         "Betting Round: " ++ show (bettingRound gs) ++ "\n" ++
+        "Revealed Cards" ++ show (revealedCommunityCards gs) ++ "\n" ++
         "Remaining Deck Size: " ++ show (length $ deck gs) ++ "\n" ++
         "=================="
 
@@ -186,6 +203,33 @@ setBets gameState newBets = gameState { bets = newBets }
 setDealerPos :: GameState -> Int -> GameState
 setDealerPos gameState newDealerPos = gameState { dealerPos = newDealerPos }
 
+setBettingRound :: GameState -> BettingRound -> GameState
+setBettingRound gameState newBettingRound = gameState {bettingRound = newBettingRound}
+
+getNextBettingRound :: BettingRound -> BettingRound
+getNextBettingRound currentRound
+    | currentRound == PreFlop = Flop
+    | currentRound == Flop = Turn
+    | currentRound == Turn = River
+    | currentRound == River = PreFlop
+
+getNextRevealedCards :: [Card] -> GameState -> [Card]
+getNextRevealedCards currentRevealed gameState
+    | length currentRevealed == 0 = take 3 (communityCards gameState)
+    | length currentRevealed == 3 = take 4 (communityCards gameState)
+    | length currentRevealed == 4 = take 5 (communityCards gameState)
+    | otherwise = []
+
+
+nextTurn :: GameState -> GameState
+nextTurn currentGameState =
+    currentGameState {
+        bets = [],
+        bettingRound = getNextBettingRound (bettingRound currentGameState),
+        revealedCommunityCards = getNextRevealedCards (revealedCommunityCards currentGameState) currentGameState
+    }
+
+
 
 customGameState :: [Player] -> [Card] -> Int -> GameState
 customGameState players shuffledDeck dealerPos = GameState {
@@ -196,7 +240,8 @@ customGameState players shuffledDeck dealerPos = GameState {
     pot            = 0,
     bets           = [],
     dealerPos      = dealerPos,
-    bettingRound   = PreFlop
+    bettingRound   = PreFlop,
+    revealedCommunityCards = []
 }
 
 
@@ -235,18 +280,170 @@ dealCards gameState =
             communityCards = community
         }
 
+-- HAND EVALUATION
+
+
+
+data HandRanking
+    = HighCard
+    | OnePair
+    | TwoPair
+    | ThreeOfAKind
+    | Straight
+    | Flush
+    | FullHouse
+    | FourOfAKind
+    | StraightFlush
+    | RoyalFlush
+    deriving (Show, Eq, Ord)
+
+sortHandRankAndSuit :: [Card] -> [Card]
+sortHandRankAndSuit = inSort
+  where
+    inSort :: [Card] -> [Card]
+    inSort [] = []
+    inSort (c:cs) = insert c (inSort cs)
+
+    insert :: Card -> [Card] -> [Card]
+    insert card [] = [card]
+    insert card (x:xs)
+        | cardValues card x = card : x : xs
+        | otherwise          = x : insert card xs
+
+    cardValues :: Card -> Card -> Bool
+    cardValues a b =
+        let aRank = getRankValue (rank a)
+            bRank = getRankValue (rank b)
+            aSuit = getSuitValue (suit a)
+            bSuit = getSuitValue (suit b)
+        in if aRank > bRank
+           then True
+           else if aRank == bRank
+                then aSuit > bSuit
+                else False
+
+
+
+
+isRoyalFlush :: [Card] -> Bool
+isRoyalFlush cards
+    |isStraightFlush cards && getCardValue (cards!!0) == 14 = True
+    |otherwise = False
+
+isStraightFlush :: [Card] -> Bool
+isStraightFlush cards
+    |isFlush cards && isStraight cards= True
+    |otherwise = False
+
+isFourOfAKind :: [Card] -> Bool
+isFourOfAKind cards
+    |values!!0 == values!!3 = True
+    |values!!1 == values!!4 = True
+    |otherwise = False
+    where
+        values = map getCardValue cards 
+
+isFullHouse :: [Card] -> Bool
+isFullHouse cards -- AABBB AAABB
+    |values!!0 == values!!2 && values!!3 == values!!4 = True
+    |values!!0 == values!!1 && values!!2 == values!!4 = True
+    |otherwise = False
+    where
+        values = map getCardValue cards 
+
+isFlush :: [Card] -> Bool
+isFlush cards
+    | length cards < 5 = False
+    | otherwise = all (== firstSuit) suits
+    where
+        suits = map suit cards
+        firstSuit = head suits
+
+isStraight :: [Card] -> Bool
+isStraight cards
+    | adjustedValues == check = True
+    | otherwise = False
+    where
+        values = map getCardValue cards
+        minValue = last values
+        adjustedValues = map (\x -> x - minValue) values 
+        check = [4,3,2,1,0]
+
+isThreeOfAKind :: [Card] -> Bool -- AAABB ABBBC ABCCC
+isThreeOfAKind cards
+    |values!!0 == values!!2 = True
+    |values!!1 == values!!3 = True
+    |values!!2 == values!!3 = True
+    |otherwise = False
+    where
+        values = map getCardValue cards 
+
+isTwoPair :: [Card] -> Bool -- AABBC AABCC ABBCC
+isTwoPair cards
+    |values!!0 == values!!1 && values!!2 == values!!3 = True
+    |values!!0 == values!!1 && values!!3 == values!!4 = True
+    |values!!1 == values!!2 && values!!3 == values!!4 = True
+    |otherwise = False
+    where
+        values = map getCardValue cards 
+
+isPair :: [Card] -> Bool --ABCDD ABCCD ABBCD AABCD
+isPair cards
+    |values!!0 == values!!1 = True
+    |values!!1 == values!!2 = True
+    |values!!2 == values!!3 = True
+    |values!!3 == values!!4 = True
+    |otherwise = False
+    where
+        values = map getCardValue cards 
+
+choose :: Int -> [a] -> [[a]]
+choose 0 _ = [[]]
+choose _ [] = []
+choose n (x:xs) = map (x:) (choose (n-1) xs) ++ choose n xs
+
+handRanking :: [Card] -> HandRanking
+handRanking cards
+    | isRoyalFlush cards     = RoyalFlush
+    | isStraightFlush cards  = StraightFlush
+    | isFourOfAKind cards    = FourOfAKind
+    | isFullHouse cards      = FullHouse
+    | isFlush cards          = Flush
+    | isStraight cards       = Straight
+    | isThreeOfAKind cards   = ThreeOfAKind
+    | isTwoPair cards        = TwoPair
+    | isPair cards           = OnePair
+    | otherwise              = HighCard
+
+bestHand :: [[Card]] -> ([Card], HandRanking)
+bestHand combos =
+    let rankedHands = [(c, handRanking c) | c <- combos]
+        sortedByRank = reverse (sortForRank rankedHands)
+    in head sortedByRank
+
+sortForRank :: [([Card], HandRanking)] -> [([Card], HandRanking)]
+sortForRank [] = []
+sortForRank (p:xs) =
+    let lessOrEqual = [x | x <- xs, snd x <= snd p]
+        greater     = [x | x <- xs, snd x > snd p]
+    in sortForRank lessOrEqual ++ [p] ++ sortForRank greater
+
+evaluateHand :: [Card] -> [Card] -> ([Card], HandRanking)
+evaluateHand playerHand communityCards =
+    let allCards = playerHand ++ communityCards
+        combos = choose 5 allCards
+        (bestCombo, bestRank) = bestHand combos
+    in (bestCombo, bestRank)
+
 
 
 -- IO
 
 main :: IO ()
 main = do
-    let player1 = customPlayer "Alice" True
-    let player2 = customPlayer "Bob" False
-    let playersList = [player1, player2]
-    
-    shuffledDeck <- shuffleDeck getDeck
-    let initialGameState = customGameState playersList shuffledDeck 0
-    let finalGameState = dealCards initialGameState
-    
-    print finalGameState
+    let playerHand = [Card Ace Hearts, Card King Hearts]              -- Player's hole cards
+    let community = [Card Queen Hearts, Card Jack Hearts, Card Ten Hearts, Card Nine Hearts, Card Eight Hearts]
+    let (bestCombo, bestRank) = evaluateHand playerHand community
+    putStrLn "Best 5-card hand:"
+    print bestCombo
+    putStrLn $ "Ranking: " ++ show bestRank
