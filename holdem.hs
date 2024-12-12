@@ -126,7 +126,7 @@ setChips player newChips = player { chips = newChips }
 setIsDealer :: Player -> Bool -> Player
 setIsDealer player newIsDealer = player { isDealer = newIsDealer }
 
-instance Show Player where 
+instance Show Player where
     show (Player { name = n, hand = c, chips = ch, isPlaying = p, action = a, isDealer = i, strategy = s }) =
         "Player: " ++ n ++ "\n" ++
         "Chips: " ++ show ch ++ "\n" ++
@@ -155,15 +155,16 @@ data BettingRound = PreFlop | Flop | Turn | River
     deriving (Eq, Show)
 
 data GameState = GameState {
-    players        :: [Player],
-    activePlayers  :: [Player],
-    deck           :: [Card],
-    communityCards :: [Card],
-    pot            :: Int,
-    bets           :: [Int],
-    dealerPos      :: Int,
-    bettingRound   :: BettingRound,
-    revealedCommunityCards :: [Card]
+    players                :: [Player],
+    activePlayers          :: [Player],
+    deck                   :: [Card],
+    communityCards         :: [Card],
+    pot                    :: Int,
+    bets                   :: [Int],
+    dealerPos              :: Int,
+    bettingRound           :: BettingRound,
+    revealedCommunityCards :: [Card],
+    roundWinner            :: Maybe Player -- Adding roundWinner as a Maybe type
 } deriving (Eq)
 
 instance Show GameState where
@@ -177,9 +178,11 @@ instance Show GameState where
         "Bets: " ++ show (bets gs) ++ "\n" ++
         "Dealer Position: " ++ show (dealerPos gs) ++ "\n" ++
         "Betting Round: " ++ show (bettingRound gs) ++ "\n" ++
-        "Revealed Cards" ++ show (revealedCommunityCards gs) ++ "\n" ++
+        "Revealed Cards: " ++ show (revealedCommunityCards gs) ++ "\n" ++
+        "Round Winner: " ++ maybe "None" show (roundWinner gs) ++ "\n" ++
         "Remaining Deck Size: " ++ show (length $ deck gs) ++ "\n" ++
         "=================="
+
 
 
 
@@ -233,16 +236,18 @@ nextTurn currentGameState =
 
 customGameState :: [Player] -> [Card] -> Int -> GameState
 customGameState players shuffledDeck dealerPos = GameState {
-    players        = players,
-    activePlayers  = players,
-    deck           = shuffledDeck,
-    communityCards = [],
-    pot            = 0,
-    bets           = [],
-    dealerPos      = dealerPos,
-    bettingRound   = PreFlop,
-    revealedCommunityCards = []
+    players                = players,
+    activePlayers          = players,
+    deck                   = shuffledDeck,
+    communityCards         = [],
+    pot                    = 0,
+    bets                   = [],
+    dealerPos              = dealerPos,
+    bettingRound           = PreFlop,
+    revealedCommunityCards = [],
+    roundWinner            = Nothing -- Default value
 }
+
 
 
 -- Deal cards
@@ -316,11 +321,7 @@ sortHandRankAndSuit = inSort
             bRank = getRankValue (rank b)
             aSuit = getSuitValue (suit a)
             bSuit = getSuitValue (suit b)
-        in if aRank > bRank
-           then True
-           else if aRank == bRank
-                then aSuit > bSuit
-                else False
+        in ((aRank > bRank) || ((aRank == bRank) && (aSuit > bSuit)))
 
 
 
@@ -341,7 +342,7 @@ isFourOfAKind cards
     |values!!1 == values!!4 = True
     |otherwise = False
     where
-        values = map getCardValue cards 
+        values = map getCardValue cards
 
 isFullHouse :: [Card] -> Bool
 isFullHouse cards -- AABBB AAABB
@@ -349,7 +350,7 @@ isFullHouse cards -- AABBB AAABB
     |values!!0 == values!!1 && values!!2 == values!!4 = True
     |otherwise = False
     where
-        values = map getCardValue cards 
+        values = map getCardValue cards
 
 isFlush :: [Card] -> Bool
 isFlush cards
@@ -366,7 +367,7 @@ isStraight cards
     where
         values = map getCardValue cards
         minValue = last values
-        adjustedValues = map (\x -> x - minValue) values 
+        adjustedValues = map (\x -> x - minValue) values
         check = [4,3,2,1,0]
 
 isThreeOfAKind :: [Card] -> Bool -- AAABB ABBBC ABCCC
@@ -376,7 +377,7 @@ isThreeOfAKind cards
     |values!!2 == values!!3 = True
     |otherwise = False
     where
-        values = map getCardValue cards 
+        values = map getCardValue cards
 
 isTwoPair :: [Card] -> Bool -- AABBC AABCC ABBCC
 isTwoPair cards
@@ -385,7 +386,7 @@ isTwoPair cards
     |values!!1 == values!!2 && values!!3 == values!!4 = True
     |otherwise = False
     where
-        values = map getCardValue cards 
+        values = map getCardValue cards
 
 isPair :: [Card] -> Bool --ABCDD ABCCD ABBCD AABCD
 isPair cards
@@ -395,7 +396,7 @@ isPair cards
     |values!!3 == values!!4 = True
     |otherwise = False
     where
-        values = map getCardValue cards 
+        values = map getCardValue cards
 
 choose :: Int -> [a] -> [[a]]
 choose 0 _ = [[]]
@@ -404,16 +405,16 @@ choose n (x:xs) = map (x:) (choose (n-1) xs) ++ choose n xs
 
 handRanking :: [Card] -> HandRanking
 handRanking cards
-    | isRoyalFlush cards     = RoyalFlush
-    | isStraightFlush cards  = StraightFlush
-    | isFourOfAKind cards    = FourOfAKind
-    | isFullHouse cards      = FullHouse
-    | isFlush cards          = Flush
-    | isStraight cards       = Straight
-    | isThreeOfAKind cards   = ThreeOfAKind
-    | isTwoPair cards        = TwoPair
-    | isPair cards           = OnePair
-    | otherwise              = HighCard
+    | isRoyalFlush cards = RoyalFlush
+    | isStraightFlush cards= StraightFlush
+    | isFourOfAKind cards= FourOfAKind
+    | isFullHouse cards = FullHouse
+    | isFlush cards = Flush
+    | isStraight cards = Straight
+    | isThreeOfAKind cards = ThreeOfAKind
+    | isTwoPair cards = TwoPair
+    | isPair cards = OnePair
+    | otherwise = HighCard
 
 bestHand :: [[Card]] -> ([Card], HandRanking)
 bestHand combos =
@@ -436,14 +437,50 @@ evaluateHand playerHand communityCards =
     in (bestCombo, bestRank)
 
 
+-- Determine Winner
+
+determineWinner :: GameState -> GameState
+determineWinner gameState =
+    let comm = communityCards gameState
+        active = activePlayers gameState
+
+        playerResults = [(p, evaluateHand (hand p) comm) | p <- active]
+
+        (winnerPlayer, _) = foldl1 betterHand playerResults
+    in gameState { roundWinner = Just winnerPlayer }
+  where
+    betterHand (accPlayer, (accCards, accRank)) (curPlayer, (curCards, curRank)) =
+      if curRank > accRank
+        then (curPlayer, (curCards, curRank))
+        else (accPlayer, (accCards, accRank))
+
+
+
+
+
+
+
 
 -- IO
 
 main :: IO ()
 main = do
-    let playerHand = [Card Ace Hearts, Card King Hearts]              -- Player's hole cards
-    let community = [Card Queen Hearts, Card Jack Hearts, Card Ten Hearts, Card Nine Hearts, Card Eight Hearts]
-    let (bestCombo, bestRank) = evaluateHand playerHand community
-    putStrLn "Best 5-card hand:"
-    print bestCombo
-    putStrLn $ "Ranking: " ++ show bestRank
+    let player1 = customPlayer "Alice" False
+    let player2 = customPlayer "Bob" False
+    let player3 = customPlayer "Charlie" False
+
+    -- Suppose deck and community cards are already set up, and players have hands dealt.
+    -- For demonstration, let's say we have a hypothetical community:
+    let community = [Card Ten Hearts, Card Jack Hearts, Card Queen Hearts, Card King Hearts, Card Ace Hearts]
+    let p1 = player1 { hand = [Card Nine Hearts, Card Eight Hearts] }
+    let p2 = player2 { hand = [Card Two Clubs, Card Two Diamonds] }
+    let p3 = player3 { hand = [Card Ace Spades, Card Seven Clubs] }
+
+    -- Create a gameState with these players and community cards
+    let gs = customGameState [p1, p2, p3] [] 0
+    let gsWithComm = gs { communityCards = community }
+
+    -- Now determine the winner
+    let finalState = determineWinner gsWithComm
+    print finalState
+    putStrLn $ "Winner: " ++ maybe "None" name (roundWinner finalState)
