@@ -1,4 +1,8 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+
 import System.Random
+import Data.List (sortBy)
+import Data.Ord (comparing)
 
 -- Game Parameters
 defaultChips :: Int
@@ -139,6 +143,7 @@ data Player = Player {
     hand        :: [Card],
     chips       :: Int,
     isPlaying   :: Bool,
+    hasFolded   :: Bool,      -- New Field
     action      :: Action,
     isDealer    :: Bool,
     strategy    :: Strategy,
@@ -146,10 +151,11 @@ data Player = Player {
 } deriving (Eq)
 
 instance Show Player where
-    show (Player { name = n, hand = c, chips = ch, isPlaying = p, action = a, isDealer = i, strategy = s, playerIndex = ind}) =
+    show (Player { name = n, hand = c, chips = ch, isPlaying = p, hasFolded = hf, action = a, isDealer = i, strategy = s, playerIndex = ind}) =
         "Player #" ++ show ind ++ " - " ++ n ++ ":\n" ++
         "  Chips        : " ++ show ch ++ "\n" ++
-        "  Status       : " ++ (if p then "Active" else "Folded") ++ "\n" ++
+        "  Status       : " ++ (if p then "Active" else "Out") ++ "\n" ++
+        "  Folded       : " ++ (if hf then "Yes" else "No") ++ "\n" ++
         "  Action       : " ++ show a ++ "\n" ++
         "  Cards        : " ++ showCards c ++ "\n" ++
         "  Dealer       : " ++ (if i then "Yes" else "No") ++ "\n" ++
@@ -162,13 +168,14 @@ instance Show Player where
 
 customPlayer :: String -> Bool -> Int -> Player
 customPlayer playerName dealer pIndex = Player {
-    name      = playerName,
-    hand      = [],
-    chips     = defaultChips,
-    isPlaying = True,
-    action    = Null,
-    isDealer  = dealer,
-    strategy  = Random,
+    name        = playerName,
+    hand        = [],
+    chips       = defaultChips,
+    isPlaying   = True,
+    hasFolded   = False,       -- Initialize as False
+    action      = Null,
+    isDealer    = dealer,
+    strategy    = Random,
     playerIndex = pIndex
 }
 
@@ -206,6 +213,7 @@ data GameState = GameState {
     gamePhase              :: GamePhase,
     revealedCommunityCards :: [Card],
     roundWinner            :: Maybe Player,
+    roundWinnerHand        :: Maybe HandRanking, -- New Field Added
     bigBlindIndex          :: Int,
     smallBlindIndex        :: Int
 } deriving (Eq)
@@ -228,7 +236,7 @@ instance Show GameState where
         "\nCommunity Cards:\n  " ++ showCards (communityCards gs) ++ "\n" ++
         "\nBets:\n  " ++ show (bets gs) ++ "\n" ++
         "Contributions:\n  " ++ show (contributions gs) ++ "\n" ++
-        "\nRound Winner:\n  " ++ maybe "None" showWinner (roundWinner gs) ++ "\n" ++
+        "\nRound Winner:\n  " ++ showWinnerWithHand (roundWinner gs, roundWinnerHand gs) ++ "\n" ++
         "=================="
       where
         showCards :: [Card] -> String
@@ -236,13 +244,15 @@ instance Show GameState where
         showCards [card] = show card
         showCards cards  = myIntercalate ", " (map show cards)
         
-        showWinner :: Player -> String
-        showWinner winner = name winner ++ " (Player #" ++ show (playerIndex winner) ++ ")"
+        showWinnerWithHand :: (Maybe Player, Maybe HandRanking) -> String
+        showWinnerWithHand (Nothing, _) = "None"
+        showWinnerWithHand (Just winner, Just handType) = name winner ++ " (Player #" ++ show (playerIndex winner) ++ ") - " ++ show handType
+        showWinnerWithHand (Just winner, Nothing) = name winner ++ " (Player #" ++ show (playerIndex winner) ++ ")"
 
 -- Utility Functions for GameState
 
 getActivePlayers :: [Player] -> [Player]
-getActivePlayers = myNub . filter isPlaying
+getActivePlayers = myNub . filter (\p -> isPlaying p && not (hasFolded p))
 
 highestBet :: GameState -> Int
 highestBet gs = if null (bets gs) then 0 else maximum (bets gs)
@@ -250,44 +260,44 @@ highestBet gs = if null (bets gs) then 0 else maximum (bets gs)
 setGamePhase :: GameState -> GamePhase -> GameState
 setGamePhase gameState newGamePhase = gameState { gamePhase = newGamePhase }
 
-commitBetsToPot :: GameState -> GameState
-commitBetsToPot gs =
-    let currentBets = bets gs
-        total = sum currentBets
-        newPot = pot gs + total
-        clearedBets = replicate (length currentBets) 0
-    in gs { pot = newPot, bets = clearedBets }
+-- Eliminate Players with 0 or fewer chips
+eliminatePlayers :: GameState -> GameState
+eliminatePlayers gs =
+    let updatedPlayers = map eliminateIfZero (players gs)
+        eliminateIfZero p
+            | chips p <= 0 = p { isPlaying = False }
+            | otherwise    = p
+        updatedActivePlayers = getActivePlayers updatedPlayers
+    in gs { players = updatedPlayers, activePlayers = updatedActivePlayers }
+    where
+        eliminateIfZero :: Player -> Player
+        eliminateIfZero p
+            | chips p <= 0 = p { isPlaying = False }
+            | otherwise    = p
 
 -- Posting Blinds
-
 postBlinds :: GameState -> GameState
 postBlinds gs =
     let pCount = length (players gs)
-        sbIndex = (dealerPos gs + 1) `mod` pCount
-        bbIndex = (dealerPos gs + 2) `mod` pCount
-        sbPlayer = (players gs) !! sbIndex
-        bbPlayer = (players gs) !! bbIndex
+        sbPlayer = players gs !! (smallBlindIndex gs)
+        bbPlayer = players gs !! (bigBlindIndex gs)
         sbAmount = min smallBlind (chips sbPlayer)
         bbAmount = min bigBlind (chips bbPlayer)
         sbPlayer' = sbPlayer { chips = chips sbPlayer - sbAmount }
         bbPlayer' = bbPlayer { chips = chips bbPlayer - bbAmount }
-        updatedPlayers = replacePlayer (replacePlayer (players gs) sbIndex sbPlayer') bbIndex bbPlayer'
+        updatedPlayers = replacePlayer (replacePlayer (players gs) (smallBlindIndex gs) sbPlayer') (bigBlindIndex gs) bbPlayer'
         updatedBets = bets gs
-        updatedBets' = setElement sbIndex sbAmount updatedBets
-        updatedBets'' = setElement bbIndex bbAmount updatedBets'
+        updatedBets' = setElement (smallBlindIndex gs) sbAmount updatedBets
+        updatedBets'' = setElement (bigBlindIndex gs) bbAmount updatedBets'
         updatedContributions = contributions gs
-        updatedContributions' = setElement sbIndex sbAmount updatedContributions
-        updatedContributions'' = setElement bbIndex bbAmount updatedContributions'
+        updatedContributions' = setElement (smallBlindIndex gs) sbAmount (setElement (bigBlindIndex gs) bbAmount updatedContributions)
         updatedActivePlayers = getActivePlayers updatedPlayers
     in gs { players = updatedPlayers,
             activePlayers = updatedActivePlayers,
             bets = updatedBets'',
-            contributions = updatedContributions'',
-            bigBlindIndex = bbIndex,
-            smallBlindIndex = sbIndex }
+            contributions = updatedContributions' }
 
 -- Dealing Cards
-
 chunksOf :: Int -> [a] -> [[a]]
 chunksOf _ [] = []
 chunksOf n xs = take n xs : chunksOf n (drop n xs)
@@ -295,24 +305,30 @@ chunksOf n xs = take n xs : chunksOf n (drop n xs)
 dealCards :: GameState -> GameState
 dealCards gameState =
     let
-        activePs = players gameState
+        activePs = activePlayers gameState
         numPlayers = length activePs
         cardsToDealToPlayers = numPlayers * 2
         (playerCards, deckAfterPlayers) = splitAt cardsToDealToPlayers (deck gameState)
         (community, remainingDeck) = splitAt 5 deckAfterPlayers
         cardPairs = chunksOf 2 playerCards
         updatedPlayers = zipWith (\player crds -> player { hand = crds }) activePs cardPairs
-        updatedActivePlayers = getActivePlayers updatedPlayers
+        updatedAllPlayers = replacePlayers (players gameState) updatedPlayers
+        updatedActivePlayers = getActivePlayers updatedAllPlayers
     in
         gameState {
-            players = updatedPlayers,
+            players = updatedAllPlayers,
             activePlayers = updatedActivePlayers,
             deck = remainingDeck,
             communityCards = community
         }
+    where
+        replacePlayers :: [Player] -> [Player] -> [Player]
+        replacePlayers original updated = foldl replace original updated
+            where
+                replace :: [Player] -> Player -> [Player]
+                replace pls upd = replacePlayer pls (playerIndex upd) upd
 
 -- Determining Next Phases and Revealing Cards
-
 getNextGamePhase :: GamePhase -> GamePhase
 getNextGamePhase currentPhase
     | currentPhase == PreFlop = Flop
@@ -339,12 +355,12 @@ playerHasFolded :: GameState -> Int -> GameState
 playerHasFolded gs foldedActiveIndex =
     let ap = activePlayers gs
         foldedPlayer = ap !! foldedActiveIndex
-        newActive = removeAt foldedActiveIndex ap
         globalIndex = playerIndex foldedPlayer
         p = (players gs) !! globalIndex
-        p' = p { isPlaying = False, action = Fold }
-        updatedAllPlayers = replacePlayer (players gs) globalIndex p'
-    in gs { players = updatedAllPlayers, activePlayers = newActive }
+        p' = p { hasFolded = True, action = Fold }
+        updatedPlayers = replacePlayer (players gs) globalIndex p'
+        gsAfterFold = gs { players = updatedPlayers }
+    in eliminatePlayers gsAfterFold
 
 playerCalls :: GameState -> Int -> GameState
 playerCalls gs pIndex =
@@ -361,14 +377,14 @@ playerCalls gs pIndex =
         newContributions = contributions gs
         newContributions' = setElement pIndex (contributions gs !! pIndex + actualCall) newContributions
         updatedActivePlayers = getActivePlayers updatedPlayers
-    in gs { players = updatedPlayers, bets = newBets, contributions = newContributions', activePlayers = updatedActivePlayers }
+    in eliminatePlayers gs { players = updatedPlayers, bets = newBets, contributions = newContributions', activePlayers = updatedActivePlayers }
 
 playerChecks :: GameState -> Int -> GameState
 playerChecks gs pIndex =
     let hb = highestBet gs
     in if hb == 0
-       then gs { players = markAction gs pIndex Check }
-       else error "Check not allowed when highestBet > 0"
+       then eliminatePlayers gs { players = markAction gs pIndex Check }
+       else gs 
 
 playerRaises :: GameState -> Int -> Int -> GameState
 playerRaises gs pIndex raiseTo =
@@ -384,11 +400,9 @@ playerRaises gs pIndex raiseTo =
         newContributions = contributions gs
         newContributions' = setElement pIndex (contributions gs !! pIndex + actualRaise) newContributions
         updatedActivePlayers = getActivePlayers updatedPlayers
-    in gs { players = updatedPlayers, bets = newBets, contributions = newContributions', activePlayers = updatedActivePlayers }
+    in eliminatePlayers gs { players = updatedPlayers, bets = newBets, contributions = newContributions', activePlayers = updatedActivePlayers }
 
--- Hand Evaluation
 
--- Check for specific hand types
 isPair :: [Card] -> Bool
 isPair cards =
     let vals = countValues cards
@@ -419,15 +433,22 @@ checkStraight :: [Int] -> Bool
 checkStraight vals
     | length vals < 5 = False
     | otherwise =
-        let low = head vals
-            normalCheck = take 5 vals == [low, low+1, low+2, low+3, low+4]
-            aceLowCheck = mySortInt vals == [2,3,4,5,14]
-        in normalCheck || aceLowCheck
+        let windows5 = takeSliding 5 vals
+        in any isSequential windows5
+
+takeSliding :: Int -> [a] -> [[a]]
+takeSliding _ [] = []
+takeSliding n xs
+    | length xs < n = []
+    | otherwise     = take n xs : takeSliding n (tail xs)
+
+isSequential :: [Int] -> Bool
+isSequential xs = all (\(a, b) -> b == a + 1) (zip xs (tail xs))
 
 isFlush :: [Card] -> Bool
 isFlush cards
     | length cards < 5 = False
-    | otherwise = all ((== suit (head cards)) . suit) cards
+    | otherwise = length (filter ((== suit (head cards)) . suit) cards) >= 5
 
 isStraightFlush :: [Card] -> Bool
 isStraightFlush cards = isFlush cards && isStraight cards
@@ -466,71 +487,59 @@ handRanking cards
     | isPair cards           = OnePair
     | otherwise              = HighCard
 
--- Best Hand Determination
-bestHand :: [[Card]] -> ([Card], HandRanking)
-bestHand combos =
-    let rankedHands = [(c, handRanking c) | c <- combos]
-        sortedByRank = mySortForRank rankedHands
-    in head (reverse sortedByRank)
+bestHandCombo :: [([Card], HandRanking)] -> ([Card], HandRanking)
+bestHandCombo combos =
+    let sorted = sortBy (comparing snd) combos
+    in last sorted 
 
--- Manual implementation of foldl1
-myFoldl1 :: (a -> a -> a) -> [a] -> a
-myFoldl1 _ []     = error "myFoldl1: empty list"
-myFoldl1 f (x:xs) = myFoldl f x xs
-  where
-    myFoldl :: (a -> a -> a) -> a -> [a] -> a
-    myFoldl _ acc []     = acc
-    myFoldl f acc (y:ys) = myFoldl f (f acc y) ys
+bestHandPlayer :: [(Player, ([Card], HandRanking))] -> (Player, ([Card], HandRanking))
+bestHandPlayer playerHands =
+    let sorted = sortBy (comparing (snd . snd)) playerHands
+    in last sorted 
 
--- Manual implementation of sort for HandRanking
-mySortForRank :: [([Card], HandRanking)] -> [([Card], HandRanking)]
-mySortForRank [] = []
-mySortForRank (p:xs) =
-    let lessOrEqual = [x | x <- xs, snd x <= snd p]
-        greater     = [x | x <- xs, snd x > snd p]
-    in mySortForRank lessOrEqual ++ [p] ++ mySortForRank greater
-
--- Choosing n elements from a list
 choose :: Int -> [a] -> [[a]]
 choose 0 _ = [[]]
 choose _ [] = []
 choose n (x:xs) = map (x:) (choose (n-1) xs) ++ choose n xs
 
--- Evaluating the Best Hand
 evaluateHand :: [Card] -> [Card] -> ([Card], HandRanking)
 evaluateHand playerHand commCards =
     let allCards = playerHand ++ commCards
         combos = choose 5 allCards
-        (bestCombo, bestRank) = bestHand combos
-    in (bestCombo, bestRank)
+        rankedCombos = [(combo, handRanking combo) | combo <- combos]
+    in if null rankedCombos
+       then ([], HighCard) 
+       else bestHandCombo rankedCombos
 
--- Determining the Winner
 determineWinner :: GameState -> GameState
-determineWinner gameState =
-    let comm = communityCards gameState
-        active = activePlayers gameState
+determineWinner gs =
+    let comm = communityCards gs
+        active = activePlayers gs
         playerResults = [(p, evaluateHand (hand p) comm) | p <- active]
-    in if null playerResults
-       then gameState
-       else
-           let (winnerPlayer, _) = myFoldl1 betterHand playerResults
-               updatedWinner = setChips winnerPlayer (chips winnerPlayer + pot gameState)
-               winnerIndex = playerIndex winnerPlayer
-               updatedPlayers = replacePlayer (players gameState) winnerIndex updatedWinner
-               updatedActivePlayers = getActivePlayers updatedPlayers
-           in gameState { players = updatedPlayers, activePlayers = updatedActivePlayers, roundWinner = Just updatedWinner, pot = 0 }
-      where
-        betterHand :: (Player, ([Card], HandRanking)) -> (Player, ([Card], HandRanking)) -> (Player, ([Card], HandRanking))
-        betterHand (accPlayer, (_, accRank)) (curPlayer, (_, curRank)) =
-            if curRank > accRank
-                then (curPlayer, ([], curRank))   -- Keep the current player's hand
-                else (accPlayer, ([], accRank))   -- Retain the accumulator's hand
+    in if length active == 1
+       then
+           let winnerPlayer = head active
+               totalPot = sum (contributions gs)
+               updatedWinner = winnerPlayer { chips = chips winnerPlayer + totalPot }
+               updatedPlayers = replacePlayer (players gs) (playerIndex winnerPlayer) updatedWinner
+               gsAfterWinner = gs { players = updatedPlayers, pot = 0, roundWinner = Just updatedWinner, roundWinnerHand = Nothing }
+               finalGS = eliminatePlayers gsAfterWinner
+           in finalGS
+       else if null playerResults
+           then gs { roundWinner = Nothing } 
+           else
+               let (winnerPlayer, bestResult) = bestHandPlayer playerResults
+                   (_, bestRank) = bestResult
+                   totalPot = sum (contributions gs)
+                   updatedWinner = winnerPlayer { chips = chips winnerPlayer + totalPot }
+                   updatedPlayers = replacePlayer (players gs) (playerIndex winnerPlayer) updatedWinner
+                   gsAfterWinner = gs { players = updatedPlayers, pot = 0, roundWinner = Just updatedWinner, roundWinnerHand = Just bestRank }
+                   finalGS = eliminatePlayers gsAfterWinner
+               in finalGS
 
--- Setting Chips for a Player
 setChips :: Player -> Int -> Player
 setChips pl ch = pl { chips = ch }
 
--- Betting Round
 
 betsForActive :: GameState -> [Int]
 betsForActive gs =
@@ -543,23 +552,22 @@ startingPlayerIndex gs =
         PreFlop ->
             let pCount = length (players gs)
                 startPos = (bigBlindIndex gs + 1) `mod` pCount
+                sbPlayer = players gs !! startPos
                 ap = activePlayers gs
-                startPlayer = (players gs) !! startPos
-                apIndex = findIndex' (playerIndex startPlayer) (map playerIndex ap)
+                apIndex = findIndex' (playerIndex sbPlayer) (map playerIndex ap)
             in case apIndex of
                 Just idx -> idx
-                Nothing  -> 0 -- Fallback to 0 if not found
+                Nothing  -> 0
         _ ->
             let pCount = length (players gs)
                 startPos = (dealerPos gs + 1) `mod` pCount
+                dealerPlayer = players gs !! startPos
                 ap = activePlayers gs
-                startPlayer = (players gs) !! startPos
-                apIndex = findIndex' (playerIndex startPlayer) (map playerIndex ap)
+                apIndex = findIndex' (playerIndex dealerPlayer) (map playerIndex ap)
             in case apIndex of
                 Just idx -> idx
-                Nothing  -> 0 -- Fallback to 0 if not found
+                Nothing  -> 0 
 
--- Random Action for a Player
 randomAction :: GameState -> Int -> IO GameState
 randomAction gs activePIndex = do
     let p = (activePlayers gs) !! activePIndex
@@ -570,7 +578,6 @@ randomAction gs activePIndex = do
         then do
             if hb == 0
                 then do
-                    -- Fold(0), Check(1), Raise(2)
                     n <- randRange 0 2
                     case n of
                         0 -> return (playerHasFolded gs activePIndex)
@@ -580,7 +587,6 @@ randomAction gs activePIndex = do
                             let gsRaised = playerRaises gs globalIndex raiseAmt
                             return gsRaised
                 else do
-                    -- Fold(0), Raise(1)
                     n <- randRange 0 1
                     if n == 0
                         then return (playerHasFolded gs activePIndex)
@@ -590,7 +596,6 @@ randomAction gs activePIndex = do
                             return gsRaised
         else if hb == 0
             then do
-                -- Fold(0), Check(1), Raise(2)
                 n <- randRange 0 2
                 case n of
                     0 -> return (playerHasFolded gs activePIndex)
@@ -600,7 +605,6 @@ randomAction gs activePIndex = do
                         let gsRaised = playerRaises gs globalIndex raiseAmt
                         return gsRaised
             else do
-                -- Fold(0), Call(1), Raise(2)
                 n <- randRange 0 2
                 case n of
                     0 -> return (playerHasFolded gs activePIndex)
@@ -612,7 +616,6 @@ randomAction gs activePIndex = do
                         let gsRaised = playerRaises gs globalIndex raiseAmt
                         return gsRaised
 
--- Picking a Raise Amount
 pickRaiseAmount :: GameState -> Int -> IO Int
 pickRaiseAmount gs pIndex = do
     let hb = highestBet gs
@@ -620,16 +623,14 @@ pickRaiseAmount gs pIndex = do
     let maxRaise = chips p
     if maxRaise <= hb
         then return hb
-        else randRange (hb + 10) (hb + min 100 (maxRaise - hb)) -- Limiting raise to prevent excessive increases
+        else randRange (hb + 10) (hb + min 100 (maxRaise - hb)) 
 
--- Marking a Player's Action
 markAction :: GameState -> Int -> Action -> [Player]
 markAction gs pIndex act =
     let p = (players gs) !! pIndex
         p' = p { action = act }
     in replacePlayer (players gs) pIndex p'
 
--- Betting Round Function
 bettingRound :: GameState -> IO GameState
 bettingRound gs = do
     let startIndex = startingPlayerIndex gs
@@ -639,26 +640,42 @@ bettingRound gs = do
     bettingLoop state currentPos raiseOccurred countSinceRaise = do
         if length (activePlayers state) <= 1
             then do
-                let finalState = commitBetsToPot state
-                return finalState
+                putStrLn "Only one active player remains. Betting round ends."
+                return state
             else do
                 let hb = highestBet state
-                let allMatched = all (\(ap, b) -> not (isPlaying ap) || b == hb) (zip (activePlayers state) (betsForActive state))
+                let allMatched = all (\p -> (isPlaying p && not (hasFolded p) && (bets state !! playerIndex p) == hb)) (activePlayers state)
+                
+                -- Debugging Statements
+                putStrLn $ "Current highest bet: " ++ show hb
+                putStrLn $ "All matched: " ++ show allMatched
+                putStrLn $ "Count since last raise: " ++ show countSinceRaise
+                
                 if allMatched && countSinceRaise >= length (activePlayers state)
                     then do
+                        putStrLn "All players have matched the highest bet. Betting round ends."
                         let finalState = commitBetsToPot state
                         return finalState
                     else do
                         let activeCount = length (activePlayers state)
                         let pIndex = currentPos `mod` activeCount
                         let currentPlayer = (activePlayers state) !! pIndex
-                        if not (isPlaying currentPlayer)
-                            then bettingLoop state (currentPos + 1) raiseOccurred (countSinceRaise + 1)
+                        
+                        -- Debugging Statement
+                        putStrLn $ "Player acting: " ++ name currentPlayer ++ " (Index: " ++ show pIndex ++ ")"
+                        
+                        if not (isPlaying currentPlayer) || hasFolded currentPlayer
+                            then do
+                                putStrLn $ "Player " ++ name currentPlayer ++ " is not active or has folded. Skipping."
+                                bettingLoop state (currentPos + 1) raiseOccurred (countSinceRaise + 1)
                             else do
                                 stateAfterAction <- if strategy currentPlayer == Random
                                                     then randomAction state pIndex
                                                     else return state -- Only Random strategy implemented
+                                
                                 let playerAct = actionTaken state stateAfterAction (playerIndex currentPlayer)
+                                putStrLn $ "Player " ++ name currentPlayer ++ " performed action: " ++ show playerAct
+                                
                                 let newRaiseOccurred = (playerAct == Raise) || raiseOccurred
                                 let newCountSinceRaise = if playerAct == Raise
                                                          then 0
@@ -670,21 +687,136 @@ bettingRound gs = do
             newPlayer = (players newState) !! pIndex
         in action newPlayer
 
--- Main Function
+-- Commit Bets to Pot
+commitBetsToPot :: GameState -> GameState
+commitBetsToPot gs =
+    let currentBets = bets gs
+        total = sum currentBets
+        newPot = pot gs + total
+        clearedBets = replicate (length currentBets) 0
+    in gs { pot = newPot, bets = clearedBets }
+
+-- Reset folded status for all players
+resetFoldedStatus :: GameState -> GameState
+resetFoldedStatus gs =
+    let updatedPlayers = map resetFolded (players gs)
+        resetFolded p = p { hasFolded = False, action = Null }
+    in gs { players = updatedPlayers }
+
+gameLoop :: Int -> Int -> GameState -> IO ()
+gameLoop currentRound maxRounds gs
+    | currentRound > maxRounds = do
+        putStrLn "\n=== Game Over ==="
+        putStrLn "Final Player Chip Counts:"
+        mapM_ printPlayerChips (players gs)
+    | length (activePlayers gs) <= 1 = do
+        putStrLn "\n=== Game Over ==="
+        putStrLn "Final Player Chip Counts:"
+        mapM_ printPlayerChips (players gs)
+    | otherwise = do
+        putStrLn $ "\n=== Starting Round " ++ show currentRound ++ " ==="
+
+        -- Deal Cards
+        let gsAfterDeal = dealCards gs
+
+        -- Post Blinds (PreFlop)
+        let gsWithBlinds = postBlinds(gsAfterDeal)
+
+        -- Run Betting Round
+        finalGS <- bettingRound gsWithBlinds
+
+        -- Commit Bets to Pot
+        let gsAfterBet = commitBetsToPot finalGS
+
+        -- Determine Winner
+        let gsWithWinner = determineWinner gsAfterBet
+
+        -- Reset folded status
+        let gsReset = resetFoldedStatus gsWithWinner
+
+        -- Print GameState After Determining Winner
+        putStrLn "\nFinal GameState After Determining Winner:"
+        print gsWithWinner
+
+        -- Announce Winner and Hand Type
+        case (roundWinner gsWithWinner, roundWinnerHand gsWithWinner) of
+            (Just winner, Just handType) -> putStrLn $ "\nWinner of Round " ++ show currentRound ++ ": " ++ name winner ++ " - " ++ show handType
+            (Just winner, Nothing)       -> putStrLn $ "\nWinner of Round " ++ show currentRound ++ ": " ++ name winner
+            (Nothing, _)                 -> putStrLn "\nNo Winner Determined for this Round."
+
+        -- Rotate Dealer Position
+        let pCount = length (players gsWithWinner)
+            newDealerPos = nextDealerPos gsWithWinner
+            newSmallBlindIndex = nextBlindPos gsWithWinner newDealerPos
+            newBigBlindIndex = nextBlindPos gsWithWinner newSmallBlindIndex
+
+            nextDealerPos :: GameState -> Int
+            nextDealerPos state =
+                let currentDealer = dealerPos state
+                    nextPos = (currentDealer + 1) `mod` pCount
+                in findNextActivePlayer state nextPos
+
+            nextBlindPos :: GameState -> Int -> Int
+            nextBlindPos state pos =
+                let nextPos = (pos + 1) `mod` pCount
+                in findNextActivePlayer state nextPos
+
+            findNextActivePlayer :: GameState -> Int -> Int
+            findNextActivePlayer state pos =
+                if isPlaying (players state !! pos)
+                    then pos
+                    else findNextActivePlayer state ((pos + 1) `mod` pCount)
+
+            markDealerAndBlinds :: [Player] -> Int -> Int -> Int -> [Player]
+            markDealerAndBlinds pls dPos sbPos bbPos =
+                let plsWithoutDealer = map (\p -> p { isDealer = False }) pls
+                    dealerUpdated = (plsWithoutDealer !! dPos) { isDealer = True }
+                    updated = replacePlayer plsWithoutDealer dPos dealerUpdated
+                in updated
+
+        let updatedPlayers = markDealerAndBlinds (players gsReset) newDealerPos newSmallBlindIndex newBigBlindIndex
+
+
+        let resetBets = replicate (length updatedPlayers) 0
+            resetContributions = replicate (length updatedPlayers) 0
+
+        let nextRoundGS = gsReset {
+                players = updatedPlayers,
+                activePlayers = getActivePlayers updatedPlayers,
+                deck = deck gsWithWinner,
+                communityCards = [],
+                pot = 0,
+                bets = resetBets,
+                contributions = resetContributions,
+                gamePhase = PreFlop,
+                revealedCommunityCards = [],
+                roundWinner = Nothing,
+                roundWinnerHand = Nothing,
+                dealerPos = newDealerPos,
+                smallBlindIndex = newSmallBlindIndex,
+                bigBlindIndex = newBigBlindIndex
+            }
+
+        gameLoop (currentRound + 1) maxRounds nextRoundGS
+
+
+
+printPlayerChips :: Player -> IO ()
+printPlayerChips p = putStrLn $ name p ++ " (Player #" ++ show (playerIndex p) ++ "): " ++ show (chips p) ++ " chips"
 
 main :: IO ()
 main = do
-    -- Initialize Players
+
     let p1 = customPlayer "Andy" True 0
     let p2 = customPlayer "Beth" False 1
     let p3 = customPlayer "Charlie" False 2
 
     let initialPlayers = [p1, p2, p3]
     
-    -- Shuffle Deck
+
     shuffledDeck <- shuffleDeck getDeck
     
-    -- Initialize GameState
+
     let gs = GameState {
             players = initialPlayers,
             activePlayers = initialPlayers,
@@ -697,35 +829,9 @@ main = do
             gamePhase = PreFlop,
             revealedCommunityCards = [],
             roundWinner = Nothing,
+            roundWinnerHand = Nothing,
             bigBlindIndex = 0,
             smallBlindIndex = 1
           }
 
-    putStrLn "Initial GameState:"
-    print gs
-
-    -- Deal Cards
-    let gsAfterDeal = dealCards gs
-    putStrLn "\nGameState After Dealing Cards:"
-    print gsAfterDeal
-
-    -- Post Blinds (PreFlop)
-    let gsWithBlinds = postBlinds gsAfterDeal
-
-    putStrLn "\nGameState After Posting Blinds:"
-    print gsWithBlinds
-
-    -- Run PreFlop Betting Round
-    finalGS <- bettingRound gsWithBlinds
-    putStrLn "\nFinal GameState After PreFlop Betting Round:"
-    print finalGS
-
-    -- Determine Winner
-    let gsWithWinner = determineWinner finalGS
-    putStrLn "\nFinal GameState After Determining Winner:"
-    print gsWithWinner
-
-    -- Announce Winner
-    case roundWinner gsWithWinner of
-        Just winner -> putStrLn $ "\nWinner: " ++ name winner
-        Nothing     -> putStrLn "\nNo Winner Determined."
+    gameLoop 1 100 gs
