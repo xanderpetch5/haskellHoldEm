@@ -16,13 +16,11 @@ bigBlind = 100
 
 -- Manual Implementations of List Functions
 
--- Manual implementation of intercalate
 myIntercalate :: String -> [String] -> String
 myIntercalate _ []     = ""
 myIntercalate _ [x]    = x
 myIntercalate sep (x:xs) = x ++ sep ++ myIntercalate sep xs
 
--- Manual implementation of insertion sort for [Card]
 mySort :: [Card] -> [Card]
 mySort []     = []
 mySort (x:xs) = insert x (mySort xs)
@@ -33,7 +31,6 @@ mySort (x:xs) = insert x (mySort xs)
         | getCardValue card <= getCardValue y = card : y : ys
         | otherwise = y : insert card ys
 
--- Manual implementation of insertion sort for [Int]
 mySortInt :: [Int] -> [Int]
 mySortInt []     = []
 mySortInt (x:xs) = insertInt x (mySortInt xs)
@@ -44,7 +41,6 @@ mySortInt (x:xs) = insertInt x (mySortInt xs)
         | n <= y    = n : y : ys
         | otherwise = y : insertInt n ys
 
--- Manual implementation of nub
 myNub :: Eq a => [a] -> [a]
 myNub []     = []
 myNub (x:xs) = x : myNub (remove x xs)
@@ -55,7 +51,6 @@ myNub (x:xs) = x : myNub (remove x xs)
         | a == y    = remove a ys
         | otherwise = y : remove a ys
 
--- Manual implementation of findIndex
 findIndex' :: Eq a => a -> [a] -> Maybe Int
 findIndex' _ [] = Nothing
 findIndex' x (y:ys)
@@ -64,21 +59,17 @@ findIndex' x (y:ys)
                     Just n  -> Just (n + 1)
                     Nothing -> Nothing
 
--- Helper function to set an element at a specific index
 setElement :: Int -> a -> [a] -> [a]
 setElement _ _ [] = []
 setElement 0 newVal (_:xs) = newVal : xs
 setElement n newVal (x:xs) = x : setElement (n-1) newVal xs
 
--- Helper function to replace a player in the players list at a specific index
 replacePlayer :: [Player] -> Int -> Player -> [Player]
 replacePlayer ps i newP = take i ps ++ [newP] ++ drop (i + 1) ps
 
--- Helper function to remove an element at a specific index
 removeAt :: Int -> [a] -> [a]
 removeAt i xs = take i xs ++ drop (i + 1) xs
 
--- randRange Function
 randRange :: Int -> Int -> IO Int
 randRange a b = randomRIO (a, b)
 
@@ -118,7 +109,6 @@ getCardValue c = getRankValue (rank c)
 getDeck :: [Card]
 getDeck = [Card r s | s <- [Clubs .. Spades], r <- [Two .. Ace]]
 
--- Shuffle Deck using recursion and manual removeAt
 shuffleDeck :: [Card] -> IO [Card]
 shuffleDeck [] = return []
 shuffleDeck xs = do
@@ -130,20 +120,22 @@ shuffleDeck xs = do
     removeAtLocal :: Int -> [a] -> (a, [a])
     removeAtLocal i ys = (ys !! i, take i ys ++ drop (i + 1) ys)
 
--- Player Definitions
+-- Strategy and Action Definitions
 
 data Action = Check | Raise | Call | Fold | Null
     deriving (Show, Eq)
 
-data Strategy = Random | Aggressive
+data Strategy = Random | Aggressive | Passive
     deriving (Show, Eq)
+
+-- Player Definitions
 
 data Player = Player {
     name        :: String,
     hand        :: [Card],
     chips       :: Int,
     isPlaying   :: Bool,
-    hasFolded   :: Bool,      -- New Field
+    hasFolded   :: Bool,
     action      :: Action,
     isDealer    :: Bool,
     strategy    :: Strategy,
@@ -166,16 +158,16 @@ instance Show Player where
         showCards [card] = show card
         showCards cards  = myIntercalate ", " (map show cards)
 
-customPlayer :: String -> Bool -> Int -> Player
-customPlayer playerName dealer pIndex = Player {
+customPlayer :: String -> Bool -> Int -> Strategy -> Player
+customPlayer playerName dealer pIndex strat = Player {
     name        = playerName,
     hand        = [],
     chips       = defaultChips,
     isPlaying   = True,
-    hasFolded   = False,       -- Initialize as False
+    hasFolded   = False,
     action      = Null,
     isDealer    = dealer,
-    strategy    = Random,
+    strategy    = strat,
     playerIndex = pIndex
 }
 
@@ -213,7 +205,7 @@ data GameState = GameState {
     gamePhase              :: GamePhase,
     revealedCommunityCards :: [Card],
     roundWinner            :: Maybe Player,
-    roundWinnerHand        :: Maybe HandRanking, -- New Field Added
+    roundWinnerHand        :: Maybe HandRanking,
     bigBlindIndex          :: Int,
     smallBlindIndex        :: Int
 } deriving (Eq)
@@ -230,9 +222,9 @@ instance Show GameState where
         "\nPlayers:\n" ++
         concatMap show (players gs) ++
         "\nActive Players:\n" ++
-        if null (activePlayers gs)
+        (if null (activePlayers gs)
             then "  None\n"
-            else concatMap show (activePlayers gs) ++
+            else concatMap show (activePlayers gs)) ++
         "\nCommunity Cards:\n  " ++ showCards (communityCards gs) ++ "\n" ++
         "\nBets:\n  " ++ show (bets gs) ++ "\n" ++
         "Contributions:\n  " ++ show (contributions gs) ++ "\n" ++
@@ -249,7 +241,7 @@ instance Show GameState where
         showWinnerWithHand (Just winner, Just handType) = name winner ++ " (Player #" ++ show (playerIndex winner) ++ ") - " ++ show handType
         showWinnerWithHand (Just winner, Nothing) = name winner ++ " (Player #" ++ show (playerIndex winner) ++ ")"
 
--- Utility Functions for GameState
+-- Utility Functions
 
 getActivePlayers :: [Player] -> [Player]
 getActivePlayers = myNub . filter (\p -> isPlaying p && not (hasFolded p))
@@ -260,7 +252,6 @@ highestBet gs = if null (bets gs) then 0 else maximum (bets gs)
 setGamePhase :: GameState -> GamePhase -> GameState
 setGamePhase gameState newGamePhase = gameState { gamePhase = newGamePhase }
 
--- Eliminate Players with 0 or fewer chips
 eliminatePlayers :: GameState -> GameState
 eliminatePlayers gs =
     let updatedPlayers = map eliminateIfZero (players gs)
@@ -269,17 +260,10 @@ eliminatePlayers gs =
             | otherwise    = p
         updatedActivePlayers = getActivePlayers updatedPlayers
     in gs { players = updatedPlayers, activePlayers = updatedActivePlayers }
-    where
-        eliminateIfZero :: Player -> Player
-        eliminateIfZero p
-            | chips p <= 0 = p { isPlaying = False }
-            | otherwise    = p
 
--- Posting Blinds
 postBlinds :: GameState -> GameState
 postBlinds gs =
-    let pCount = length (players gs)
-        sbPlayer = players gs !! (smallBlindIndex gs)
+    let sbPlayer = players gs !! (smallBlindIndex gs)
         bbPlayer = players gs !! (bigBlindIndex gs)
         sbAmount = min smallBlind (chips sbPlayer)
         bbAmount = min bigBlind (chips bbPlayer)
@@ -297,7 +281,6 @@ postBlinds gs =
             bets = updatedBets'',
             contributions = updatedContributions' }
 
--- Dealing Cards
 chunksOf :: Int -> [a] -> [[a]]
 chunksOf _ [] = []
 chunksOf n xs = take n xs : chunksOf n (drop n xs)
@@ -328,7 +311,6 @@ dealCards gameState =
                 replace :: [Player] -> Player -> [Player]
                 replace pls upd = replacePlayer pls (playerIndex upd) upd
 
--- Determining Next Phases and Revealing Cards
 getNextGamePhase :: GamePhase -> GamePhase
 getNextGamePhase currentPhase
     | currentPhase == PreFlop = Flop
@@ -348,8 +330,6 @@ advancePhase gs =
     let newPhase = getNextGamePhase (gamePhase gs)
         newRevealed = getNextRevealedCards (revealedCommunityCards gs) gs
     in gs { gamePhase = newPhase, revealedCommunityCards = newRevealed }
-
--- Player Actions
 
 playerHasFolded :: GameState -> Int -> GameState
 playerHasFolded gs foldedActiveIndex =
@@ -384,7 +364,7 @@ playerChecks gs pIndex =
     let hb = highestBet gs
     in if hb == 0
        then eliminatePlayers gs { players = markAction gs pIndex Check }
-       else gs 
+       else gs
 
 playerRaises :: GameState -> Int -> Int -> GameState
 playerRaises gs pIndex raiseTo =
@@ -402,6 +382,7 @@ playerRaises gs pIndex raiseTo =
         updatedActivePlayers = getActivePlayers updatedPlayers
     in eliminatePlayers gs { players = updatedPlayers, bets = newBets, contributions = newContributions', activePlayers = updatedActivePlayers }
 
+-- Hand Evaluation
 
 isPair :: [Card] -> Bool
 isPair cards =
@@ -490,12 +471,12 @@ handRanking cards
 bestHandCombo :: [([Card], HandRanking)] -> ([Card], HandRanking)
 bestHandCombo combos =
     let sorted = sortBy (comparing snd) combos
-    in last sorted 
+    in last sorted
 
 bestHandPlayer :: [(Player, ([Card], HandRanking))] -> (Player, ([Card], HandRanking))
 bestHandPlayer playerHands =
     let sorted = sortBy (comparing (snd . snd)) playerHands
-    in last sorted 
+    in last sorted
 
 choose :: Int -> [a] -> [[a]]
 choose 0 _ = [[]]
@@ -508,7 +489,7 @@ evaluateHand playerHand commCards =
         combos = choose 5 allCards
         rankedCombos = [(combo, handRanking combo) | combo <- combos]
     in if null rankedCombos
-       then ([], HighCard) 
+       then ([], HighCard)
        else bestHandCombo rankedCombos
 
 determineWinner :: GameState -> GameState
@@ -526,7 +507,7 @@ determineWinner gs =
                finalGS = eliminatePlayers gsAfterWinner
            in finalGS
        else if null playerResults
-           then gs { roundWinner = Nothing } 
+           then gs { roundWinner = Nothing }
            else
                let (winnerPlayer, bestResult) = bestHandPlayer playerResults
                    (_, bestRank) = bestResult
@@ -539,7 +520,6 @@ determineWinner gs =
 
 setChips :: Player -> Int -> Player
 setChips pl ch = pl { chips = ch }
-
 
 betsForActive :: GameState -> [Int]
 betsForActive gs =
@@ -566,8 +546,11 @@ startingPlayerIndex gs =
                 apIndex = findIndex' (playerIndex dealerPlayer) (map playerIndex ap)
             in case apIndex of
                 Just idx -> idx
-                Nothing  -> 0 
+                Nothing  -> 0
 
+-- Action Functions Based on Strategy
+
+-- For Random strategy we have an existing logic:
 randomAction :: GameState -> Int -> IO GameState
 randomAction gs activePIndex = do
     let p = (activePlayers gs) !! activePIndex
@@ -584,16 +567,14 @@ randomAction gs activePIndex = do
                         1 -> return (playerChecks gs globalIndex)
                         2 -> do
                             raiseAmt <- pickRaiseAmount gs globalIndex
-                            let gsRaised = playerRaises gs globalIndex raiseAmt
-                            return gsRaised
+                            return (playerRaises gs globalIndex raiseAmt)
                 else do
                     n <- randRange 0 1
                     if n == 0
                         then return (playerHasFolded gs activePIndex)
                         else do
                             raiseAmt <- pickRaiseAmount gs globalIndex
-                            let gsRaised = playerRaises gs globalIndex raiseAmt
-                            return gsRaised
+                            return (playerRaises gs globalIndex raiseAmt)
         else if hb == 0
             then do
                 n <- randRange 0 2
@@ -602,19 +583,113 @@ randomAction gs activePIndex = do
                     1 -> return (playerChecks gs globalIndex)
                     2 -> do
                         raiseAmt <- pickRaiseAmount gs globalIndex
-                        let gsRaised = playerRaises gs globalIndex raiseAmt
-                        return gsRaised
+                        return (playerRaises gs globalIndex raiseAmt)
             else do
                 n <- randRange 0 2
                 case n of
                     0 -> return (playerHasFolded gs activePIndex)
-                    1 -> do
-                        let gsCalled = playerCalls gs globalIndex
-                        return gsCalled
+                    1 -> return (playerCalls gs globalIndex)
                     2 -> do
                         raiseAmt <- pickRaiseAmount gs globalIndex
-                        let gsRaised = playerRaises gs globalIndex raiseAmt
-                        return gsRaised
+                        return (playerRaises gs globalIndex raiseAmt)
+
+-- Passive strategy: never raises
+passiveAction :: GameState -> Int -> IO GameState
+passiveAction gs activePIndex = do
+    let p = (activePlayers gs) !! activePIndex
+    let globalIndex = playerIndex p
+    let hb = highestBet gs
+    let currentBet = (bets gs) !! globalIndex
+
+    if hb == currentBet
+        then do
+            if hb == 0
+                then do
+                    -- Fold(0), Check(1) only
+                    n <- randRange 0 1
+                    case n of
+                        0 -> return (playerHasFolded gs activePIndex)
+                        1 -> return (playerChecks gs globalIndex)
+                else do
+                    -- If hb > 0: Fold(0) or Call(1)
+                    n <- randRange 0 1
+                    if n == 0
+                        then return (playerHasFolded gs activePIndex)
+                        else return (playerCalls gs globalIndex)
+        else if hb == 0
+            then do
+                -- no raise needed, just fold or check
+                n <- randRange 0 1
+                case n of
+                    0 -> return (playerHasFolded gs activePIndex)
+                    1 -> return (playerChecks gs globalIndex)
+            else do
+                -- hb > currentBet, must fold or call
+                n <- randRange 0 1
+                if n == 0
+                    then return (playerHasFolded gs activePIndex)
+                    else return (playerCalls gs globalIndex)
+
+-- Aggressive strategy (for demonstration, treat same as Random for now)
+aggressiveAction :: GameState -> Int -> IO GameState
+aggressiveAction gs activePIndex = do
+    let p = (activePlayers gs) !! activePIndex
+    let globalIndex = playerIndex p
+    let hb = highestBet gs
+    let currentBet = (bets gs) !! globalIndex
+
+    if hb == currentBet
+        then do
+            if hb == 0
+                then do
+                    -- FOLD, CHECK, RAISE case
+                    n <- randRange 0 4
+                    case n of
+                        0 -> return (playerChecks gs globalIndex)
+                        1 -> return (playerChecks gs globalIndex)
+                        _ -> do
+                            raiseAmt <- pickRaiseAmount gs globalIndex
+                            return (playerRaises gs globalIndex raiseAmt)
+                else do
+                    -- FOLD, CALL, RAISE case
+                    n <- randRange 0 4
+                    case n of
+                        0 -> return (playerHasFolded gs activePIndex)
+                        1 -> return (playerCalls gs globalIndex)
+                        2 -> return (playerCalls gs globalIndex)
+                        _ -> do
+                            raiseAmt <- pickRaiseAmount gs globalIndex
+                            return (playerRaises gs globalIndex raiseAmt)
+        else if hb == 0
+            then do
+                -- FOLD, CHECK, RAISE case
+                n <- randRange 0 4
+                case n of
+                    0 -> return (playerChecks gs globalIndex)
+                    1 -> return (playerChecks gs globalIndex)
+                    _ -> do
+                        raiseAmt <- pickRaiseAmount gs globalIndex
+                        return (playerRaises gs globalIndex raiseAmt)
+            else do
+                -- FOLD, CALL, RAISE case
+                n <- randRange 0 4
+                case n of
+                    0 -> return (playerHasFolded gs activePIndex)
+                    1 -> return (playerCalls gs globalIndex)
+                    2 -> return (playerCalls gs globalIndex)
+                    _ -> do
+                        raiseAmt <- pickRaiseAmount gs globalIndex
+                        return (playerRaises gs globalIndex raiseAmt)
+
+
+-- Dispatch function based on player's strategy
+performActionForStrategy :: GameState -> Int -> IO GameState
+performActionForStrategy gs activePIndex = do
+    let p = (activePlayers gs) !! activePIndex
+    case strategy p of
+        Random     -> randomAction gs activePIndex
+        Aggressive -> aggressiveAction gs activePIndex
+        Passive    -> passiveAction gs activePIndex
 
 pickRaiseAmount :: GameState -> Int -> IO Int
 pickRaiseAmount gs pIndex = do
@@ -623,7 +698,7 @@ pickRaiseAmount gs pIndex = do
     let maxRaise = chips p
     if maxRaise <= hb
         then return hb
-        else randRange (hb + 10) (hb + min 100 (maxRaise - hb)) 
+        else randRange (hb + 10) (hb + min 100 (maxRaise - hb))
 
 markAction :: GameState -> Int -> Action -> [Player]
 markAction gs pIndex act =
@@ -646,7 +721,6 @@ bettingRound gs = do
                 let hb = highestBet state
                 let allMatched = all (\p -> (isPlaying p && not (hasFolded p) && (bets state !! playerIndex p) == hb)) (activePlayers state)
                 
-                -- Debugging Statements
                 putStrLn $ "Current highest bet: " ++ show hb
                 putStrLn $ "All matched: " ++ show allMatched
                 putStrLn $ "Count since last raise: " ++ show countSinceRaise
@@ -661,7 +735,6 @@ bettingRound gs = do
                         let pIndex = currentPos `mod` activeCount
                         let currentPlayer = (activePlayers state) !! pIndex
                         
-                        -- Debugging Statement
                         putStrLn $ "Player acting: " ++ name currentPlayer ++ " (Index: " ++ show pIndex ++ ")"
                         
                         if not (isPlaying currentPlayer) || hasFolded currentPlayer
@@ -669,10 +742,7 @@ bettingRound gs = do
                                 putStrLn $ "Player " ++ name currentPlayer ++ " is not active or has folded. Skipping."
                                 bettingLoop state (currentPos + 1) raiseOccurred (countSinceRaise + 1)
                             else do
-                                stateAfterAction <- if strategy currentPlayer == Random
-                                                    then randomAction state pIndex
-                                                    else return state -- Only Random strategy implemented
-                                
+                                stateAfterAction <- performActionForStrategy state pIndex
                                 let playerAct = actionTaken state stateAfterAction (playerIndex currentPlayer)
                                 putStrLn $ "Player " ++ name currentPlayer ++ " performed action: " ++ show playerAct
                                 
@@ -683,11 +753,9 @@ bettingRound gs = do
                                 bettingLoop stateAfterAction (currentPos + 1) newRaiseOccurred newCountSinceRaise
 
     actionTaken oldState newState pIndex =
-        let oldPlayer = (players oldState) !! pIndex
-            newPlayer = (players newState) !! pIndex
+        let newPlayer = (players newState) !! pIndex
         in action newPlayer
 
--- Commit Bets to Pot
 commitBetsToPot :: GameState -> GameState
 commitBetsToPot gs =
     let currentBets = bets gs
@@ -696,7 +764,6 @@ commitBetsToPot gs =
         clearedBets = replicate (length currentBets) 0
     in gs { pot = newPot, bets = clearedBets }
 
--- Reset folded status for all players
 resetFoldedStatus :: GameState -> GameState
 resetFoldedStatus gs =
     let updatedPlayers = map resetFolded (players gs)
@@ -716,35 +783,21 @@ gameLoop currentRound maxRounds gs
     | otherwise = do
         putStrLn $ "\n=== Starting Round " ++ show currentRound ++ " ==="
 
-        -- Deal Cards
         let gsAfterDeal = dealCards gs
-
-        -- Post Blinds (PreFlop)
         let gsWithBlinds = postBlinds(gsAfterDeal)
-
-        -- Run Betting Round
         finalGS <- bettingRound gsWithBlinds
-
-        -- Commit Bets to Pot
         let gsAfterBet = commitBetsToPot finalGS
-
-        -- Determine Winner
         let gsWithWinner = determineWinner gsAfterBet
-
-        -- Reset folded status
         let gsReset = resetFoldedStatus gsWithWinner
 
-        -- Print GameState After Determining Winner
         putStrLn "\nFinal GameState After Determining Winner:"
         print gsWithWinner
 
-        -- Announce Winner and Hand Type
         case (roundWinner gsWithWinner, roundWinnerHand gsWithWinner) of
             (Just winner, Just handType) -> putStrLn $ "\nWinner of Round " ++ show currentRound ++ ": " ++ name winner ++ " - " ++ show handType
             (Just winner, Nothing)       -> putStrLn $ "\nWinner of Round " ++ show currentRound ++ ": " ++ name winner
             (Nothing, _)                 -> putStrLn "\nNo Winner Determined for this Round."
 
-        -- Rotate Dealer Position
         let pCount = length (players gsWithWinner)
             newDealerPos = nextDealerPos gsWithWinner
             newSmallBlindIndex = nextBlindPos gsWithWinner newDealerPos
@@ -768,15 +821,12 @@ gameLoop currentRound maxRounds gs
                     else findNextActivePlayer state ((pos + 1) `mod` pCount)
 
             markDealerAndBlinds :: [Player] -> Int -> Int -> Int -> [Player]
-            markDealerAndBlinds pls dPos sbPos bbPos =
+            markDealerAndBlinds pls dPos _ _ =
                 let plsWithoutDealer = map (\p -> p { isDealer = False }) pls
                     dealerUpdated = (plsWithoutDealer !! dPos) { isDealer = True }
-                    updated = replacePlayer plsWithoutDealer dPos dealerUpdated
-                in updated
+                in replacePlayer plsWithoutDealer dPos dealerUpdated
 
         let updatedPlayers = markDealerAndBlinds (players gsReset) newDealerPos newSmallBlindIndex newBigBlindIndex
-
-
         let resetBets = replicate (length updatedPlayers) 0
             resetContributions = replicate (length updatedPlayers) 0
 
@@ -799,23 +849,18 @@ gameLoop currentRound maxRounds gs
 
         gameLoop (currentRound + 1) maxRounds nextRoundGS
 
-
-
 printPlayerChips :: Player -> IO ()
 printPlayerChips p = putStrLn $ name p ++ " (Player #" ++ show (playerIndex p) ++ "): " ++ show (chips p) ++ " chips"
 
 main :: IO ()
 main = do
-
-    let p1 = customPlayer "Andy" True 0
-    let p2 = customPlayer "Beth" False 1
-    let p3 = customPlayer "Charlie" False 2
+    let p1 = customPlayer "Andy" True 0 Passive
+    let p2 = customPlayer "Beth" False 1 Random
+    let p3 = customPlayer "Charlie" False 2 Aggressive
 
     let initialPlayers = [p1, p2, p3]
-    
 
     shuffledDeck <- shuffleDeck getDeck
-    
 
     let gs = GameState {
             players = initialPlayers,
